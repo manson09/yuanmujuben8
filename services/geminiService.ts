@@ -80,7 +80,9 @@ export const geminiService = {
    - **前 3 集极致爆发**：设置全剧最强爽点与反转。
    - **前 10 集全线暴爽**：节奏极快，每一集必须有实质进展，绝不注水。
 3. **阶段结构**：第一阶段固定 10 集。
-4. **受众对焦**：${mode}模式。`;
+4. **受众对焦**：${mode}模式。
+5.所有环节都必须是中文`;
+
 
     const response = await ai.models.generateContent({
         model: "google/gemini-3-pro-preview", 
