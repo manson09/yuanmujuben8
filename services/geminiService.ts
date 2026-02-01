@@ -5,9 +5,9 @@ const API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
 const BASE_URL = import.meta.env.VITE_BASE_URL || "https://openrouter.ai/api/v1";
 
 const openai = new OpenAI({
-  apiKey: API_KEY, 
+  apiKey: API_KEY,
   baseURL: BASE_URL,
-  dangerouslyAllowBrowser: true, 
+  dangerouslyAllowBrowser: true,
   defaultHeaders: {
     "HTTP-Referer": "https://yuanmujuben8.pages.dev",
     "X-Title": "yuanmu",
@@ -25,7 +25,70 @@ async function callWithRetry(fn: () => Promise<any>, retries = 3, delay = 2000) 
   }
 }
 
-// --- 强化版桥接函数：强制 AI 严格遵守复杂的嵌套 JSON 结构 ---
+/**
+ * =========================
+ * ✅ 新增：阶段衔接工具（只在本文件内使用，不影响其他文件）
+ * =========================
+ */
+
+/** 尝试从全文中抓取最后一集（尽量按“第X集”切割；失败则退化为取尾部） */
+function extractLastEpisodeBlock(text: string) {
+  if (!text) return "";
+
+  // 匹配 “第12集” 这种标记（你输出里通常有“第X集”）
+  const re = /第\s*\d+\s*集/g;
+  let lastIndex = -1;
+  let match: RegExpExecArray | null;
+
+  while ((match = re.exec(text)) !== null) {
+    lastIndex = match.index;
+  }
+
+  if (lastIndex >= 0) {
+    return text.slice(lastIndex).trim();
+  }
+
+  // 退化方案：直接取尾部一段
+  return text.slice(-2000).trim();
+}
+
+/** 取最后N字作为“尾巴” */
+function tail(text: string, n = 600) {
+  if (!text) return "";
+  if (text.length <= n) return text;
+  return text.slice(-n);
+}
+
+/** 取最后一句（尽量以中文句号/叹号/问号/换行切） */
+function lastSentence(text: string) {
+  if (!text) return "";
+  const s = text.trim();
+  if (!s) return "";
+
+  // 先按换行切最后一行
+  const lines = s.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const lastLine = lines.length ? lines[lines.length - 1] : s;
+
+  // 再按句末符号切（取最后一句）
+  const parts = lastLine.split(/([。！？\?])/).filter(Boolean);
+  if (parts.length >= 2) {
+    // parts 可能是 ["xxx", "。", "yyy", "！"]
+    const last = parts.slice(-2).join("");
+    return last.trim() || lastLine;
+  }
+  return lastLine;
+}
+
+/** 判断是不是“新阶段开头”：上一阶段上下文存在且本阶段不是第一阶段 */
+function isNewPhaseStart(phasePlan: any, prevScriptContext: string) {
+  return !!prevScriptContext && phasePlan?.phaseIndex && phasePlan.phaseIndex > 1;
+}
+
+/**
+ * =========================
+ * --- 强化版桥接函数：强制 AI 严格遵守复杂的嵌套 JSON 结构 ---
+ * =========================
+ */
 const getAI = () => {
   return {
     models: {
@@ -67,6 +130,7 @@ const getAI = () => {
     }
   };
 };
+
 export const geminiService = {
   generateOutline: async (novelText: string, mode: any): Promise<any> => {
     return callWithRetry(async () => {
@@ -83,9 +147,8 @@ export const geminiService = {
 4. **受众对焦**：${mode}模式。
 5.所有环节都必须是中文`;
 
-
-    const response = await ai.models.generateContent({
-        model: "google/gemini-3-pro-preview", 
+      const response = await ai.models.generateContent({
+        model: "google/gemini-3-pro-preview",
         contents: `素材内容：\n${novelText}`,
         config: {
           systemInstruction,
@@ -130,10 +193,10 @@ export const geminiService = {
   },
 
   generatePhaseScript: async (
-    novelText: string, 
-    outline: string, 
-    phasePlan: any, 
-    prevScriptContext: string, 
+    novelText: string,
+    outline: string,
+    phasePlan: any,
+    prevScriptContext: string,
     mode: any,
     scriptStyle: any,
     layoutRef: string = "",
@@ -142,7 +205,19 @@ export const geminiService = {
     return callWithRetry(async () => {
       const ai = getAI();
       const isFirstPhase = phasePlan.phaseIndex === 1;
-      const styleInstruction = scriptStyle === '情绪流' 
+
+      /**
+       * ✅ 新增：自动桥接材料（只在“新阶段开头”时启用）
+       * - lastEpisodeBlock：尽量抓到上一阶段最后一集完整块（从“第X集”开始）
+       * - lastEpisodeTail：最后600字（衔接最稳）
+       * - lastLine：最后一句（强制从这句之后续写）
+       */
+      const newPhaseStart = isNewPhaseStart(phasePlan, prevScriptContext);
+      const lastEpisodeBlock = newPhaseStart ? extractLastEpisodeBlock(prevScriptContext) : "";
+      const lastEpisodeTail = newPhaseStart ? tail(lastEpisodeBlock || prevScriptContext, 700) : "";
+      const lastLine = newPhaseStart ? lastSentence(lastEpisodeTail || lastEpisodeBlock || prevScriptContext) : "";
+
+      const styleInstruction = scriptStyle === '情绪流'
         ? `【流派：情绪流】——聚焦高强度情绪释放，节奏紧凑，冲突尖锐。
 
 【爽点类型与创作指引】：
@@ -199,9 +274,20 @@ export const geminiService = {
 - 若原著为轻松向（如穿书、快穿），可适度增加玩梗和骚操作
 `;
 
-      const continuityInstruction = isFirstPhase 
+      /**
+       * ✅ 仅改这里：把“无缝衔接指令”升级为硬桥接，不改你其他提示词结构
+       */
+      const continuityInstruction = isFirstPhase
         ? `【开篇指令】：首集3句内必须进入冲突，快速建模。`
-        : `【无缝衔接指令】：必须深度解析[上下文]最后一集的结尾剧情和悬念。本阶段第一集必须直接接续该悬念，不得有任何剧情跳跃或逻辑断层。`;
+        : (
+          newPhaseStart
+            ? `【无缝衔接指令（硬规则）】：
+你会收到【上一阶段最后一集结尾原文】与【上一阶段最后一句】。
+本阶段第一集必须从“上一阶段最后一句之后”继续写，时间点必须紧贴上一阶段结尾，不能跳天、不能换地图、不能新开支线来转移矛盾。
+开场150字内必须把上一阶段结尾悬念用“动作+对话”接住（不许旁白概括）。
+必须保留上一阶段结尾在场人物关系与关键道具/系统/器灵/萌宠的互动，不得用旁白替代它们的台词。`
+            : `【无缝衔接指令】：必须深度解析[上下文]最后一集的结尾剧情和悬念。本阶段第一集必须直接接续该悬念，不得有任何剧情跳跃或逻辑断层。`
+        );
 
       const systemInstruction = `你是一位专注爆款漫剧的首席编剧。任务：生成阶段 ${phasePlan.phaseIndex} 的 ${phasePlan.episodes} 集脚本。
 
@@ -230,9 +316,28 @@ export const geminiService = {
 3. 集末卡点：每集结尾必须有勾住观众的“断章”悬念。
 4.单集满足600-800字`;
 
-       const response = await ai.models.generateContent({
+      /**
+       * ✅ 仅改这里：contents 前面加“桥接块”，不改你传参、不改你外部调用
+       * - 如果是新阶段开头：明确喂“上一阶段最后一集结尾原文 + 最后一句”
+       * - 否则维持你原来的上下文结构
+       */
+      const stitchBlock = newPhaseStart
+        ? `【上一阶段最后一集结尾原文（最高优先级，不得忽略）】：
+${lastEpisodeTail}
+
+【上一阶段最后一句（必须从这句之后继续写）】：
+${lastLine}
+`
+        : "";
+
+      const response = await ai.models.generateContent({
         model: "google/gemini-3-pro-preview",
-        contents: `[上下文]：\n${prevScriptContext}\n[目标]：\n${outline}\n[素材]：\n${novelText}`,
+        contents: `${stitchBlock}[上下文]：
+${prevScriptContext}
+[目标]：
+${outline}
+[素材]：
+${novelText}`,
         config: {
           systemInstruction,
           responseMimeType: "application/json",
@@ -254,7 +359,7 @@ export const geminiService = {
           }
         }
       });
-      
+
       const data = JSON.parse(response.text);
       return { episodes: data.episodes || [] };
     });
