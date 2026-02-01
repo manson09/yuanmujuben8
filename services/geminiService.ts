@@ -1,7 +1,6 @@
 import OpenAI from 'openai';
 import { Episode, KBFile, Shot } from "../types";
 
-// --- 基础配置 ---
 const API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
 const BASE_URL = import.meta.env.VITE_BASE_URL || "https://openrouter.ai/api/v1";
 
@@ -15,59 +14,59 @@ const openai = new OpenAI({
   }
 });
 
-const Type = {
-  OBJECT: 'object',
-  ARRAY: 'array',
-  STRING: 'string',
-  NUMBER: 'number'
-};
+const Type = { OBJECT: 'object', ARRAY: 'array', STRING: 'string', NUMBER: 'number' };
 
-// --- 自动重试 ---
 async function callWithRetry(fn: () => Promise<any>, retries = 3, delay = 2000) {
   for (let i = 0; i < retries; i++) {
-    try {
-      return await fn();
-    } catch (error: any) {
-      if (i === retries - 1 || !error.message?.includes('429')) {
-        throw error;
-      }
+    try { return await fn(); } catch (error: any) {
+      if (i === retries - 1 || !error.message?.includes('429')) throw error;
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 }
 
-// --- 桥接函数 ---
+// --- 强化版桥接函数：强制 AI 严格遵守复杂的嵌套 JSON 结构 ---
 const getAI = () => {
   return {
     models: {
       generateContent: async (config: any) => {
-        if (!API_KEY || API_KEY.length < 10) {
-          console.error("❌ 未检测到有效的 API Key");
-          throw new Error("API_KEY_MISSING");
+        if (!API_KEY) throw new Error("API_KEY_MISSING");
+
+        // 将 Schema 转换为极其明确的文案指令
+        const schema = config.config.responseSchema;
+        let jsonInstruction = "";
+        if (schema && schema.properties) {
+          jsonInstruction = `
+【必须严格遵守的 JSON 输出格式】：
+请直接输出 JSON 对象，不得包含任何 Markdown 格式。
+必须包含且仅包含以下字段：
+- content: (string) 剧本总大纲描述
+- characters: (array) 包含对象：{ name, gender, age, identity, appearance, growth, motivation }
+- phasePlans: (array) 包含对象：{ phaseIndex, episodes, description, climax }
+- episodes: (array) 如果是生成脚本，包含：{ episodeNumber, title, content }`;
         }
 
         try {
           const response = await openai.chat.completions.create({
             model: config.model,
             messages: [
-              // 修复点：在系统指令末尾强制要求 JSON 格式及字段名
-              { role: "system", content: config.config.systemInstruction + "\n\n必须返回 JSON 格式，且包含以下字段：content (string), characters (array), phasePlans (array)。" },
+              { role: "system", content: config.config.systemInstruction + "\n" + jsonInstruction },
               { role: "user", content: config.contents }
             ],
             response_format: { type: "json_object" }
           });
 
-          const rawContent = response.choices[0].message.content || "{}";
-          return { text: rawContent };
+          const res = response.choices[0].message.content || "{}";
+          console.log("AI 响应原文:", res); // 方便你 F12 调试
+          return { text: res };
         } catch (err: any) {
-          console.error("OpenRouter 请求失败:", err);
+          console.error("请求失败:", err);
           throw err;
         }
       }
     }
   };
 };
-
 export const geminiService = {
   generateOutline: async (novelText: string, mode: any): Promise<any> => {
     return callWithRetry(async () => {
@@ -83,26 +82,48 @@ export const geminiService = {
 3. **阶段结构**：第一阶段固定 10 集。
 4. **受众对焦**：${mode}模式。`;
 
-      const response = await ai.models.generateContent({
+    const response = await ai.models.generateContent({
         model: "google/gemini-3-pro-preview", 
-        contents: `素材：\n${novelText}`,
+        contents: `素材内容：\n${novelText}`,
         config: {
           systemInstruction,
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              content: { type: Type.STRING },
+              characters: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING }, gender: { type: Type.STRING }, age: { type: Type.STRING },
+                    identity: { type: Type.STRING }, appearance: { type: Type.STRING }, growth: { type: Type.STRING },
+                    motivation: { type: Type.STRING }
+                  }
+                }
+              },
+              phasePlans: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    phaseIndex: { type: Type.NUMBER }, episodes: { type: Type.NUMBER },
+                    description: { type: Type.STRING }, climax: { type: Type.STRING }
+                  }
+                }
+              }
+            }
+          }
         }
       });
 
-      try {
-        const data = JSON.parse(response.text);
-        // 确保字段存在
-        return {
-          content: data.content || "",
-          characters: data.characters || [],
-          phasePlans: data.phasePlans || []
-        };
-      } catch (e) {
-        return { content: "解析失败", characters: [], phasePlans: [] };
-      }
+      const data = JSON.parse(response.text);
+      return {
+        content: data.content || "",
+        characters: data.characters || [],
+        phasePlans: data.phasePlans || []
+      };
     });
   },
 
@@ -119,7 +140,6 @@ export const geminiService = {
     return callWithRetry(async () => {
       const ai = getAI();
       const isFirstPhase = phasePlan.phaseIndex === 1;
-
       const styleInstruction = scriptStyle === '情绪流' 
         ? `【流派：情绪流】极致冲突，节奏爆破，反派脑残化嚣张化，情绪拉扯拉满，爽就完事了。`
         : `【流派：非情绪流】诙谐幽默，反套路脑洞，融入热梗，对话有机锋且有趣。`;
@@ -153,26 +173,33 @@ export const geminiService = {
 2. ${continuityInstruction}
 3. 集末卡点：每集结尾必须有勾住观众的“断章”悬念。`;
 
-      const response = await ai.models.generateContent({
+       const response = await ai.models.generateContent({
         model: "google/gemini-3-pro-preview",
-        contents: `
-        [重要上下文]：\n${prevScriptContext || "无"}
-        [大纲规划]：\n${outline}
-        [原著素材]：\n${novelText}
-        [风格参考]：\n${styleRef}`,
+        contents: `[上下文]：\n${prevScriptContext}\n[目标]：\n${outline}\n[素材]：\n${novelText}`,
         config: {
-          // 修复点：确保脚本生成也包含字段要求
-          systemInstruction: systemInstruction + "\n\n必须返回 JSON 格式，且包含 episodes 字段（数组类型）。",
-          responseMimeType: "application/json"
+          systemInstruction,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              episodes: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    episodeNumber: { type: Type.NUMBER },
+                    title: { type: Type.STRING },
+                    content: { type: Type.STRING }
+                  }
+                }
+              }
+            }
+          }
         }
       });
       
-      try {
-        const data = JSON.parse(response.text);
-        return { episodes: data.episodes || [] };
-      } catch (e) {
-        return { episodes: [] };
-      }
+      const data = JSON.parse(response.text);
+      return { episodes: data.episodes || [] };
     });
   }
 };
