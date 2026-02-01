@@ -10,7 +10,7 @@ const openai = new OpenAI({
   baseURL: BASE_URL,
   dangerouslyAllowBrowser: true, 
   defaultHeaders: {
-    "HTTP-Referer": "https://yuanmujuben8.pages.dev", // 必须与你部署的域名一致
+    "HTTP-Referer": "https://yuanmujuben8.pages.dev",
     "X-Title": "yuanmu",
   }
 });
@@ -41,34 +41,26 @@ const getAI = () => {
   return {
     models: {
       generateContent: async (config: any) => {
-        // 调试：检查 API Key 是否加载
         if (!API_KEY || API_KEY.length < 10) {
-          console.error("❌ 错误：未检测到有效的 API Key。请在 Cloudflare 后台设置 VITE_OPENAI_API_KEY 环境变量并重新部署。");
+          console.error("❌ 未检测到有效的 API Key");
           throw new Error("API_KEY_MISSING");
         }
-
-        console.log(`🚀 正在通过 OpenRouter 调用模型: ${config.model}`);
 
         try {
           const response = await openai.chat.completions.create({
             model: config.model,
             messages: [
-              { role: "system", content: config.config.systemInstruction },
+              // 修复点：在系统指令末尾强制要求 JSON 格式及字段名
+              { role: "system", content: config.config.systemInstruction + "\n\n必须返回 JSON 格式，且包含以下字段：content (string), characters (array), phasePlans (array)。" },
               { role: "user", content: config.contents }
             ],
-            // 某些预览版模型可能对 JSON 格式要求极严
             response_format: { type: "json_object" }
           });
 
           const rawContent = response.choices[0].message.content || "{}";
-          console.log("✅ AI 响应成功:", rawContent);
           return { text: rawContent };
         } catch (err: any) {
-          console.error("❌ OpenRouter 请求失败:", err);
-          // 如果是模型不存在，尝试给出更具体的错误提示
-          if (err.status === 404) {
-            console.error("提示：模型名称可能不正确或该模型在 OpenRouter 暂时不可用。");
-          }
+          console.error("OpenRouter 请求失败:", err);
           throw err;
         }
       }
@@ -92,7 +84,7 @@ export const geminiService = {
 4. **受众对焦**：${mode}模式。`;
 
       const response = await ai.models.generateContent({
-        model: "google/gemini-3-pro-preview", // 保持你要求的模型名称
+        model: "google/gemini-3-pro-preview", 
         contents: `素材：\n${novelText}`,
         config: {
           systemInstruction,
@@ -102,14 +94,14 @@ export const geminiService = {
 
       try {
         const data = JSON.parse(response.text);
+        // 确保字段存在
         return {
           content: data.content || "",
           characters: data.characters || [],
           phasePlans: data.phasePlans || []
         };
       } catch (e) {
-        console.error("解析 JSON 失败:", e);
-        return { content: "数据格式错误", characters: [], phasePlans: [] };
+        return { content: "解析失败", characters: [], phasePlans: [] };
       }
     });
   },
@@ -169,7 +161,8 @@ export const geminiService = {
         [原著素材]：\n${novelText}
         [风格参考]：\n${styleRef}`,
         config: {
-          systemInstruction,
+          // 修复点：确保脚本生成也包含字段要求
+          systemInstruction: systemInstruction + "\n\n必须返回 JSON 格式，且包含 episodes 字段（数组类型）。",
           responseMimeType: "application/json"
         }
       });
