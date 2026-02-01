@@ -1,18 +1,20 @@
 import OpenAI from 'openai';
 import { Episode, KBFile, Shot } from "../types";
 
-// --- 保持你原有的初始化不变 ---
+// --- 基础配置 ---
+const API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
+const BASE_URL = import.meta.env.VITE_BASE_URL || "https://openrouter.ai/api/v1";
+
 const openai = new OpenAI({
-  apiKey: import.meta.env.VITE_OPENAI_API_KEY, 
-  baseURL: import.meta.env.VITE_BASE_URL || "https://openrouter.ai/api/v1",
+  apiKey: API_KEY, 
+  baseURL: BASE_URL,
   dangerouslyAllowBrowser: true, 
   defaultHeaders: {
-    "HTTP-Referer": "https://yuanmujuben8.pages.dev",
-    "X-Title": "yuanmu",
+    "HTTP-Referer": "https://yuanmujuben8.pages.dev", // 必须与你部署的域名一致
+    "X-Title": "yuanmu创作中心",
   }
 });
 
-// --- 补全缺失的 Type 定义 (保持与 Google Schema 兼容) ---
 const Type = {
   OBJECT: 'object',
   ARRAY: 'array',
@@ -20,7 +22,7 @@ const Type = {
   NUMBER: 'number'
 };
 
-// --- 补全缺失的辅助函数：自动重试 ---
+// --- 自动重试 ---
 async function callWithRetry(fn: () => Promise<any>, retries = 3, delay = 2000) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -29,39 +31,51 @@ async function callWithRetry(fn: () => Promise<any>, retries = 3, delay = 2000) 
       if (i === retries - 1 || !error.message?.includes('429')) {
         throw error;
       }
-      console.log(`请求失败，正在进行第 ${i + 1} 次重试...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 }
 
-// --- 补全 getAI 函数：将 Google SDK 写法桥接到 OpenAI 客户端 ---
+// --- 桥接函数 ---
 const getAI = () => {
   return {
     models: {
       generateContent: async (config: any) => {
-        // 将 Google 的 generateContent 格式转换为 OpenAI 格式
-        const response = await openai.chat.completions.create({
-          model: config.model,
-          messages: [
-            { role: "system", content: config.config.systemInstruction },
-            { role: "user", content: config.contents }
-          ],
-          response_format: config.config.responseMimeType === "application/json" 
-            ? { type: "json_object" } 
-            : undefined
-        });
-        
-        // 模拟 Google SDK 的返回结构，确保你的 JSON.parse(response.text) 有效
-        return {
-          text: response.choices[0].message.content || "{}"
-        };
+        // 调试：检查 API Key 是否加载
+        if (!API_KEY || API_KEY.length < 10) {
+          console.error("❌ 错误：未检测到有效的 API Key。请在 Cloudflare 后台设置 VITE_OPENAI_API_KEY 环境变量并重新部署。");
+          throw new Error("API_KEY_MISSING");
+        }
+
+        console.log(`🚀 正在通过 OpenRouter 调用模型: ${config.model}`);
+
+        try {
+          const response = await openai.chat.completions.create({
+            model: config.model,
+            messages: [
+              { role: "system", content: config.config.systemInstruction },
+              { role: "user", content: config.contents }
+            ],
+            // 某些预览版模型可能对 JSON 格式要求极严
+            response_format: { type: "json_object" }
+          });
+
+          const rawContent = response.choices[0].message.content || "{}";
+          console.log("✅ AI 响应成功:", rawContent);
+          return { text: rawContent };
+        } catch (err: any) {
+          console.error("❌ OpenRouter 请求失败:", err);
+          // 如果是模型不存在，尝试给出更具体的错误提示
+          if (err.status === 404) {
+            console.error("提示：模型名称可能不正确或该模型在 OpenRouter 暂时不可用。");
+          }
+          throw err;
+        }
       }
     }
   };
 };
 
-// --- 以下是你原来的业务逻辑，完全未动 ---
 export const geminiService = {
   generateOutline: async (novelText: string, mode: any): Promise<any> => {
     return callWithRetry(async () => {
@@ -78,44 +92,25 @@ export const geminiService = {
 4. **受众对焦**：${mode}模式。`;
 
       const response = await ai.models.generateContent({
-        model: "google/gemini-3-pro-preview",
+        model: "google/gemini-3-pro-preview", // 保持你要求的模型名称
         contents: `素材：\n${novelText}`,
         config: {
           systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              content: { type: Type.STRING },
-              characters: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    name: { type: Type.STRING }, gender: { type: Type.STRING }, age: { type: Type.STRING },
-                    identity: { type: Type.STRING }, appearance: { type: Type.STRING }, growth: { type: Type.STRING },
-                    motivation: { type: Type.STRING }
-                  },
-                  required: ["name", "gender", "age", "identity", "appearance", "growth", "motivation"]
-                }
-              },
-              phasePlans: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    phaseIndex: { type: Type.NUMBER }, episodes: { type: Type.NUMBER },
-                    description: { type: Type.STRING }, climax: { type: Type.STRING }
-                  },
-                  required: ["phaseIndex", "episodes", "description", "climax"]
-                }
-              }
-            },
-            required: ["content", "characters", "phasePlans"]
-          }
+          responseMimeType: "application/json"
         }
       });
-      return JSON.parse(response.text);
+
+      try {
+        const data = JSON.parse(response.text);
+        return {
+          content: data.content || "",
+          characters: data.characters || [],
+          phasePlans: data.phasePlans || []
+        };
+      } catch (e) {
+        console.error("解析 JSON 失败:", e);
+        return { content: "数据格式错误", characters: [], phasePlans: [] };
+      }
     });
   },
 
@@ -169,37 +164,22 @@ export const geminiService = {
       const response = await ai.models.generateContent({
         model: "google/gemini-3-pro-preview",
         contents: `
-        [重要上下文（紧接此剧情开始）]：\n${prevScriptContext || "无（本阶段为开篇）"}
-        
-        [大纲规划（本阶段目标）]：\n${outline}
-        
+        [重要上下文]：\n${prevScriptContext || "无"}
+        [大纲规划]：\n${outline}
         [原著素材]：\n${novelText}
-        
-        [风格文笔参考]：\n${styleRef}`,
+        [风格参考]：\n${styleRef}`,
         config: {
           systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              episodes: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    episodeNumber: { type: Type.NUMBER },
-                    title: { type: Type.STRING },
-                    content: { type: Type.STRING }
-                  },
-                  required: ["episodeNumber", "title", "content"]
-                }
-              }
-            },
-            required: ["episodes"]
-          }
+          responseMimeType: "application/json"
         }
       });
-      return JSON.parse(response.text);
+      
+      try {
+        const data = JSON.parse(response.text);
+        return { episodes: data.episodes || [] };
+      } catch (e) {
+        return { episodes: [] };
+      }
     });
   }
 };
