@@ -228,7 +228,7 @@ export const geminiService = {
 1. ${styleInstruction}
 2. ${continuityInstruction}
 3. 集末卡点：每集结尾必须有勾住观众的“断章”悬念。
-4.单集满足500-800字`;
+4.单集满足600-800字`;
 
        const response = await ai.models.generateContent({
         model: "google/gemini-3-pro-preview",
