@@ -1,29 +1,16 @@
+import OpenAI from 'openai';
+import { Episode, KBFile, Shot } from "../types";
 
-import { GoogleGenAI, Type } from "@google/genai";
-import { Mode, ProjectOutline, PhasePlan, ScriptStyle } from "../types";
-
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-
-async function callWithRetry(fn: () => Promise<any>, maxRetries = 4): Promise<any> {
-  let lastError: any;
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await fn();
-    } catch (error: any) {
-      lastError = error;
-      const errorMessage = error?.message?.toLowerCase() || "";
-      const status = error?.status || (errorMessage.includes('429') ? 429 : errorMessage.includes('500') ? 500 : 0);
-      const isRetryable = status === 429 || status >= 500 || errorMessage.includes('xhr') || errorMessage.includes('rpc');
-      if (isRetryable) {
-        const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      throw error;
-    }
+// 初始化 OpenRouter 客户端
+const openai = new OpenAI({
+  apiKey: import.meta.env.VITE_OPENAI_API_KEY, 
+  baseURL: import.meta.env.VITE_BASE_URL || "https://openrouter.ai/api/v1",
+  dangerouslyAllowBrowser: true, 
+  defaultHeaders: {
+    "HTTP-Referer": "https://yuanmujuben8.pages.dev",
+    "X-Title": "yuanmu",
   }
-  throw lastError;
-}
+});
 
 export const geminiService = {
   generateOutline: async (novelText: string, mode: Mode): Promise<ProjectOutline> => {
@@ -41,7 +28,7 @@ export const geminiService = {
 4. **受众对焦**：${mode}模式。`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-pro-preview",
+        model: "google/gemini-3-pro-preview",
         contents: `素材：\n${novelText}`,
         config: {
           systemInstruction,
@@ -130,7 +117,7 @@ export const geminiService = {
 3. 集末卡点：每集结尾必须有勾住观众的“断章”悬念。`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-pro-preview",
+        model: "google/gemini-3-pro-preview",
         contents: `
         [重要上下文（紧接此剧情开始）]：\n${prevScriptContext || "无（本阶段为开篇）"}
         
