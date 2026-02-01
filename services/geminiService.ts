@@ -11,7 +11,7 @@ const openai = new OpenAI({
   dangerouslyAllowBrowser: true, 
   defaultHeaders: {
     "HTTP-Referer": "https://yuanmujuben8.pages.dev", // 必须与你部署的域名一致
-    "X-Title": "yuanmu创作中心",
+    "X-Title": "yuanmu",
   }
 });
 
